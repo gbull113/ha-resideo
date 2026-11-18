@@ -10,6 +10,6 @@
   "issue_tracker": "https://github.com/sfcodes/ha-resideo/issues",
   "loggers": ["custom_components.resideo"],
   "requirements": [],
-  "version": "0.3.9"
+  "version": "0.3.10"
 }
 

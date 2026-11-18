@@ -221,6 +221,10 @@ class ResideoClient:
         """Authenticated PUT; returns parsed JSON (typically ``{"TransactionId": ...}``)."""
         return await self._request("PUT", endpoint, **kwargs)
 
+    async def post(self, endpoint: str, **kwargs: Any) -> Any:
+        """Authenticated POST; returns parsed JSON."""
+        return await self._request("POST", endpoint, **kwargs)
+
     # -- reads (all confirmed live; see resideo-api-spec.md §3) ---------------
     async def get_accounts(self) -> dict[str, Any]:
         """The consumer account graph (users -> accounts -> locations -> devices)."""
