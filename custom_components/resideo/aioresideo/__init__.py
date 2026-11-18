@@ -102,6 +102,14 @@ class Resideo:
         """Fetch all devices at a location."""
         return await self.client.get_location_devices(account_id, location_id)
 
+    async def async_get_user_alerts(self) -> list[dict[str, Any]]:
+        """Fetch active user alerts from /ris-public-api/api/v1/users/my/alerts."""
+        return await self.client.get_user_alerts()
+
+    async def async_get_device_notifications(self, mac: str) -> dict[str, Any]:
+        """Fetch alert preferences/delivery settings for a device."""
+        return await self.client.get_device_notifications(mac)
+
     # -- reads ----------------------------------------------------------------
 
     async def async_get_device(self, mac: str) -> ResideoThermostat:

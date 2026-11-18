@@ -287,128 +287,80 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
         return result
 
     async def _async_refresh_leak_detectors(self) -> None:
-        """Best-effort initial/resync refresh of leak detectors from location devices and telemetry endpoints."""
-        queried_locations: set[str] = set()
+        """Refresh leak detectors from confirmed live Resideo location devices and user alerts."""
+        queried_locations: set[tuple[str, str]] = set()
         for leak in self.leak_detectors.values():
             acc_raw = leak.account_id or ""
-            acc_uuid = _decode_b64(acc_raw)
             loc_raw = leak.location_id or ""
-            loc_uuid = _decode_b64(loc_raw)
+            if not loc_raw or (acc_raw, loc_raw) in queried_locations:
+                continue
+            queried_locations.add((acc_raw, loc_raw))
+            try:
+                resp = await self.api.client.get_location_devices(acc_raw, loc_raw)
+                devices_data = resp.get("data") if isinstance(resp, dict) else resp
+                if isinstance(devices_data, list):
+                    for dev_item in devices_data:
+                        dev_mac = self._find_first(dev_item, "deviceId", "mac")
+                        if dev_mac:
+                            clean_mac = clean_device_id(dev_mac)
+                            if clean_mac in self.leak_detectors:
+                                self._update_leak_detector_from_dict(clean_mac, dev_item)
+            except Exception as err:
+                _LOGGER.debug("Failed to fetch location devices for %s: %s", loc_raw, err)
 
-            # 1. Location-level device collections & status
-            loc_candidates = [
-                # Base collection (confirmed 200)
-                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices",
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices",
+        # Ingest active user alerts (e.g. WaterLeak, LowBattery, DeviceOffline)
+        try:
+            alerts = await self.api.client.get_user_alerts()
+            _LOGGER.debug("Fetched %d active alert(s) from Resideo cloud", len(alerts))
+            active_leaks: set[str] = set()
+            active_low_batt: dict[str, int] = {}
+            active_offline: set[str] = set()
 
-                # Location collection with query parameters to expand telemetry
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices?includeStatus=true",
-                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices?includeStatus=true",
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices?includeDetails=true",
-                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices?includeDetails=true",
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices?includeTelemetry=true",
-                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices?includeTelemetry=true",
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices?expand=true",
-
-                # Location entity itself
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}",
-                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}",
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/status",
-                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/status",
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/summary",
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/devices",
-                f"/ris-public-api/api/v2/accounts/{acc_raw}/devices",
-
-                # Honeywell Home / Public API locations
-                "https://api.honeywellhome.com/v2/locations",
-                "https://api.honeywellhome.com/v2/devices/waterLeakDetector",
-                "https://api.honeywell.com/v2/locations",
-            ]
-            for loc_ep in loc_candidates:
-                if not loc_raw or loc_ep in queried_locations:
+            for alert in alerts:
+                if not isinstance(alert, dict):
                     continue
-                queried_locations.add(loc_ep)
-                try:
-                    resp = await self.api.client.get(loc_ep)
-                    self.probe_results[loc_ep] = {"status": 200, "data": resp}
-                    _LOGGER.warning("PROBE LOCATION SUCCESS [200]: %s -> %s", loc_ep, str(resp)[:200])
-                    for l_mac in self.leak_detectors:
-                        self._update_leak_detector_from_dict(l_mac, resp)
-                except ResideoApiError as err:
-                    self.probe_results[loc_ep] = {"status": err.status, "body": str(err.body)[:100]}
-                    _LOGGER.debug("PROBE LOCATION [%s]: %s", err.status, loc_ep)
-                except Exception as err:
-                    self.probe_results[loc_ep] = {"error": str(err)}
-                    _LOGGER.debug("PROBE LOCATION [ERR]: %s -> %s", loc_ep, err)
-
-        # 2. Per-device candidate telemetry endpoints
-        for mac, leak in self.leak_detectors.items():
-            acc_raw = leak.account_id or ""
-            acc_uuid = _decode_b64(acc_raw)
-            loc_raw = leak.location_id or ""
-            loc_uuid = _decode_b64(loc_raw)
-            cd_raw = leak.consumer_device_id or ""
-            cd_uuid = _decode_b64(cd_raw)
-            dev_raw = leak.device_id_raw or ""
-
-            candidates = [
-                # 1. Single device under the 200 Location collection
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{mac}",
-                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices/{mac}",
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_raw}",
-                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_raw}",
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_uuid}",
-                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_uuid}",
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{dev_raw}",
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{mac}/info",
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{mac}/status",
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_uuid}/info",
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_uuid}/status",
-
-                # 2. Devices endpoints with /info (proven pattern from shutOffValves)
-                f"/ris-public-api/api/v1/devices/waterLeakDetectors/{mac}/info",
-                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}/info",
-                f"/ris-public-api/api/v1/devices/waterLeakDetector/{mac}/info",
-                f"/ris-public-api/api/v2/devices/waterLeakDetector/{mac}/info",
-                f"/ris-public-api/api/v1/devices/leakDetectors/{mac}/info",
-                f"/ris-public-api/api/v2/devices/leakDetectors/{mac}/info",
-                f"/ris-public-api/api/v1/devices/leakDetector/{mac}/info",
-                f"/ris-public-api/api/v2/devices/leakDetector/{mac}/info",
-                f"/ris-public-api/api/v1/devices/wld3/{mac}/info",
-                f"/ris-public-api/api/v1/devices/wld/{mac}/info",
-                f"/ris-public-api/api/v1/devices/waterSensors/{mac}/info",
-                f"/ris-public-api/api/v1/devices/water/{mac}/info",
-                f"/ris-public-api/api/v1/devices/{mac}/info",
-                f"/ris-public-api/api/v2/devices/{mac}/info",
-                f"/ris-public-api/api/v1/devices/{cd_uuid}/info",
-                f"/ris-public-api/api/v1/devices/shutOffValves/{mac}/info",
-
-                # 3. Direct devices endpoints with query params
-                f"/ris-public-api/api/v1/devices/waterLeakDetectors/{mac}?locationId={loc_raw}",
-                f"/ris-public-api/api/v1/devices/waterLeakDetector/{mac}?locationId={loc_raw}",
-                f"/ris-public-api/api/v1/devices/waterLeakDetectors/{mac}?locationId={loc_uuid}",
-                f"/ris-public-api/api/v1/devices/waterLeakDetector/{mac}?locationId={loc_uuid}",
-
-                # 4. Honeywell Home / Public API endpoints
-                f"https://api.honeywellhome.com/v2/devices/waterLeakDetectors/{mac}?locationId={loc_uuid}",
-                f"https://api.honeywellhome.com/v2/devices/waterLeakDetector/{mac}?locationId={loc_uuid}",
-                f"https://api.honeywell.com/v2/devices/waterLeakDetector/{mac}",
-                f"https://api.honeywell.com/v2/devices/waterLeakDetectors/{mac}",
-            ]
-            for endpoint in candidates:
-                if not endpoint:
+                dev_id = alert.get("deviceId") or (alert.get("rawEvent", {}).get("Body", {}).get("DeviceId"))
+                if not dev_id:
                     continue
-                try:
-                    dev_data = await self.api.client.get(endpoint)
-                    self.probe_results[endpoint] = {"status": 200, "data": dev_data}
-                    _LOGGER.warning("PROBE SUCCESS [200]: %s -> %s", endpoint, str(dev_data)[:300])
-                    self._update_leak_detector_from_dict(mac, dev_data)
-                except ResideoApiError as err:
-                    self.probe_results[endpoint] = {"status": err.status, "body": str(err.body)[:100]}
-                    _LOGGER.debug("PROBE [%s]: %s", err.status, endpoint)
-                except Exception as err:
-                    self.probe_results[endpoint] = {"error": str(err)}
-                    _LOGGER.debug("PROBE [ERR]: %s -> %s", endpoint, err)
+                mac = clean_device_id(dev_id)
+                if not mac or mac not in self.leak_detectors:
+                    continue
+
+                body = (alert.get("rawEvent") or {}).get("Body") or {}
+                resolved = body.get("Resolved") if "Resolved" in body else alert.get("resolved")
+                is_active = (resolved is None) or (resolved is False)
+
+                ntype = str(alert.get("notificationType") or body.get("NotificationType") or "").lower()
+
+                if is_active:
+                    if "water" in ntype or "leak" in ntype:
+                        active_leaks.add(mac)
+                    if "criticalbattery" in ntype:
+                        active_low_batt[mac] = min(active_low_batt.get(mac, 100), 5)
+                    elif "lowbattery" in ntype or "battery" in ntype:
+                        active_low_batt[mac] = min(active_low_batt.get(mac, 100), 15)
+                    if "offline" in ntype:
+                        active_offline.add(mac)
+
+            for mac, leak in self.leak_detectors.items():
+                old_water = leak.water_present
+                leak.water_present = (mac in active_leaks)
+                if leak.water_present != old_water:
+                    _LOGGER.info("Leak detector %s water_present updated: %s", mac, leak.water_present)
+
+                if mac in active_low_batt:
+                    leak.battery_level = active_low_batt[mac]
+                elif leak.battery_level is None:
+                    # Normal battery state when no active low-battery alert is present
+                    leak.battery_level = 100
+
+                if mac in active_offline:
+                    leak.is_online = False
+                elif not leak.is_online:
+                    leak.is_online = True
+
+        except Exception as err:
+            _LOGGER.debug("Failed to fetch user alerts: %s", err)
 
     def _update_leak_detector_from_dict(self, mac: str, data: Any) -> None:
         if mac not in self.leak_detectors:
@@ -479,11 +431,30 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
                     if not leak.water_present:
                         leak.water_present = True
                         changed = True
-        elif isinstance(alarms, dict):
-            w_alarm = alarms.get("water") or alarms.get("leak")
-            if isinstance(w_alarm, dict) and str(w_alarm.get("deviceState", "")).lower() == "alarm":
-                if not leak.water_present:
-                    leak.water_present = True
+        # Notification / Alert payload parsing
+        ntype = str(self._find_first(data, "notificationType", "NotificationType", "templateId") or "").lower()
+        if ntype:
+            resolved = self._find_first(data, "resolved", "Resolved")
+            is_active = (resolved is None) or (resolved is False)
+            if "water" in ntype or "leak" in ntype:
+                old_w = leak.water_present
+                leak.water_present = is_active
+                if leak.water_present != old_w:
+                    changed = True
+            if "criticalbattery" in ntype:
+                val_b = 5 if is_active else 100
+                if leak.battery_level != val_b:
+                    leak.battery_level = val_b
+                    changed = True
+            elif "lowbattery" in ntype or "battery" in ntype:
+                val_b = 15 if is_active else 100
+                if leak.battery_level != val_b:
+                    leak.battery_level = val_b
+                    changed = True
+            if "offline" in ntype:
+                val_on = not is_active
+                if leak.is_online != val_on:
+                    leak.is_online = val_on
                     changed = True
 
         # 2. Temperature
@@ -866,6 +837,11 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
         val = event.value
 
         _LOGGER.info("LeakDetector LiveFeed received for %s (%s): %s", mac, event.property_name, val)
+
+        if isinstance(val, dict) and ("Value" in val or "value" in val) and not any(k in val for k in ("deviceId", "DeviceId", "product", "device")):
+            val_unwrapped = val.get("Value") if "Value" in val else val.get("value")
+            if val_unwrapped is not None:
+                val = val_unwrapped
 
         if isinstance(val, dict):
             self._update_leak_detector_from_dict(mac, val)

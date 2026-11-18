@@ -253,6 +253,19 @@ class ResideoClient:
             f"/ris-public-api/api/v1/accounts/{account_id}/locations/{location_id}/devices"
         )
 
+    async def get_user_alerts(self) -> list[dict[str, Any]]:
+        """Fetch active user alerts from /ris-public-api/api/v1/users/my/alerts."""
+        resp = await self.get("/ris-public-api/api/v1/users/my/alerts")
+        if isinstance(resp, dict) and "data" in resp:
+            return resp["data"]
+        if isinstance(resp, list):
+            return resp
+        return []
+
+    async def get_device_notifications(self, mac: str) -> dict[str, Any]:
+        """Fetch alert preferences/delivery settings for a device."""
+        return await self.get(f"/ris-public-api/api/v1/users/my/devices/{mac}/notifications")
+
     async def get_leak_detector(self, mac: str, location_id: str | None = None) -> dict[str, Any] | None:
         """Fetch leak detector details/status if supported."""
         params = f"?locationId={location_id}" if location_id else ""
