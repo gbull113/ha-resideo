@@ -259,87 +259,130 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
         return result
 
     async def _async_refresh_leak_detectors(self) -> None:
-        """Best-effort initial/resync refresh of leak detectors from location devices endpoint."""
+        """Best-effort initial/resync refresh of leak detectors from location devices and telemetry endpoints."""
         queried_locations: set[tuple[str, str]] = set()
         for leak in self.leak_detectors.values():
             if leak.account_id and leak.location_id:
                 loc_key = (leak.account_id, leak.location_id)
-                if loc_key in queried_locations:
-                    continue
-                queried_locations.add(loc_key)
+                if loc_key not in queried_locations:
+                    queried_locations.add(loc_key)
+                    try:
+                        resp = await self.api.async_get_location_devices(leak.account_id, leak.location_id)
+                        if isinstance(resp, dict) and "data" in resp:
+                            for item in resp.get("data") or []:
+                                dev = item.get("device") or {}
+                                mac = dev.get("deviceId")
+                                if mac and mac in self.leak_detectors:
+                                    if dev.get("sku"):
+                                        self.leak_detectors[mac].sku = dev["sku"]
+                                    self._update_leak_detector_from_dict(mac, item)
+                    except Exception as err:
+                        _LOGGER.debug("Could not refresh location devices for %s: %s", leak.location_id, err)
+
+        # Probe candidate telemetry endpoints for each leak detector
+        for mac, leak in self.leak_detectors.items():
+            loc_id = leak.location_id
+            candidates = [
+                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}?locationId={loc_id}",
+                f"/ris-public-api/api/v1/devices/waterLeakDetectors/{mac}?locationId={loc_id}",
+                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}",
+                f"/ris-public-api/api/v1/devices/waterLeakDetectors/{mac}",
+                f"/ris-public-api/api/v2/devices/waterLeakDetector/{mac}?locationId={loc_id}",
+                f"/ris-public-api/api/v1/devices/waterLeakDetector/{mac}?locationId={loc_id}",
+            ]
+            for endpoint in candidates:
                 try:
-                    resp = await self.api.async_get_location_devices(leak.account_id, leak.location_id)
-                    if isinstance(resp, dict) and "data" in resp:
-                        for item in resp.get("data") or []:
-                            dev = item.get("device") or {}
-                            mac = dev.get("deviceId")
-                            if mac and mac in self.leak_detectors:
-                                if dev.get("sku"):
-                                    self.leak_detectors[mac].sku = dev["sku"]
-                                self._update_leak_detector_from_dict(mac, item)
+                    dev_data = await self.api.client.get(endpoint)
+                    if isinstance(dev_data, dict):
+                        _LOGGER.debug("Candidate endpoint %s returned data for %s: %s", endpoint, mac, dev_data)
+                        self._update_leak_detector_from_dict(mac, dev_data)
+                        break
                 except Exception as err:
-                    _LOGGER.debug("Could not refresh location devices for %s: %s", leak.location_id, err)
+                    _LOGGER.debug("Candidate endpoint %s failed for %s: %s", endpoint, mac, err)
 
     def _update_leak_detector_from_dict(self, mac: str, data: dict[str, Any]) -> None:
-        if mac not in self.leak_detectors:
+        if mac not in self.leak_detectors or not isinstance(data, dict):
             return
         leak = self.leak_detectors[mac]
+        changed = False
+
+        def _get_val(d: dict[str, Any], *keys: str) -> Any:
+            lower_d = {str(k).lower(): v for k, v in d.items()}
+            for k in keys:
+                if k.lower() in lower_d:
+                    return lower_d[k.lower()]
+            for sub in ("accessoryvalue", "currentsensorreadings", "sensorreadings", "reported", "readings", "telemetry", "state", "device"):
+                if sub in lower_d and isinstance(lower_d[sub], dict):
+                    res = _get_val(lower_d[sub], *keys)
+                    if res is not None:
+                        return res
+            return None
 
         # 1. Moisture / Water Present
-        for key in ("waterPresent", "water_present", "WaterPresent", "leakDetected"):
-            if key in data:
-                leak.water_present = bool(data[key])
-                break
+        water = _get_val(data, "waterPresent", "water_present", "leakDetected", "water", "leak", "isWaterDetected")
+        if water is not None:
+            old_water = leak.water_present
+            if isinstance(water, bool):
+                leak.water_present = water
+            elif isinstance(water, (int, float)):
+                leak.water_present = bool(water)
+            elif isinstance(water, str):
+                leak.water_present = water.lower() in ("true", "1", "leak", "water", "wet", "alarm")
+            if leak.water_present != old_water:
+                changed = True
 
-        # Alarms list
         alarms = data.get("currentAlarms") or data.get("alarms") or []
-        for alarm in alarms:
-            alarm_str = str(alarm).lower()
-            if "leak" in alarm_str or "water" in alarm_str:
-                leak.water_present = True
+        if isinstance(alarms, list):
+            for alarm in alarms:
+                alarm_str = str(alarm).lower()
+                if "leak" in alarm_str or "water" in alarm_str:
+                    if not leak.water_present:
+                        leak.water_present = True
+                        changed = True
 
-        # 2. Temperature / Humidity
-        readings = data.get("currentSensorReadings") or data.get("sensorReadings") or {}
-        temp = (
-            readings.get("temperature")
-            or data.get("temperature")
-            or data.get("indoorTemperature")
-        )
+        # 2. Temperature
+        temp = _get_val(data, "indoorTemperature", "temperature", "temp", "indoor_temperature")
         if temp is not None:
             try:
-                leak.temperature = float(temp)
+                val_temp = float(temp)
+                if leak.temperature != val_temp:
+                    leak.temperature = val_temp
+                    changed = True
             except (ValueError, TypeError):
                 pass
 
-        hum = (
-            readings.get("humidity")
-            or data.get("humidity")
-            or data.get("indoorHumidity")
-        )
+        # 3. Humidity
+        hum = _get_val(data, "indoorHumidity", "humidity", "hum", "humid", "indoor_humidity")
         if hum is not None:
             try:
-                leak.humidity = float(hum)
+                val_hum = float(hum)
+                if leak.humidity != val_hum:
+                    leak.humidity = val_hum
+                    changed = True
             except (ValueError, TypeError):
                 pass
 
-        # 3. Battery
-        battery = (
-            data.get("batteryRemaining")
-            or data.get("battery")
-            or data.get("batteryLevel")
-            or readings.get("batteryRemaining")
-        )
-        if battery is not None:
+        # 4. Battery
+        batt = _get_val(data, "batteryRemaining", "batteryLevel", "battery", "battery_level", "batteryPercentage")
+        if batt is not None:
             try:
-                leak.battery_level = int(battery)
+                val_batt = int(batt)
+                if leak.battery_level != val_batt:
+                    leak.battery_level = val_batt
+                    changed = True
             except (ValueError, TypeError):
                 pass
 
-        # 4. Connectivity / Online
-        if "isOnline" in data:
-            leak.is_online = bool(data["isOnline"])
-        elif "online" in data:
-            leak.is_online = bool(data["online"])
+        # 5. Connectivity
+        online = _get_val(data, "isOnline", "online", "connected")
+        if online is not None:
+            val_online = bool(online)
+            if leak.is_online != val_online:
+                leak.is_online = val_online
+                changed = True
+
+        if changed:
+            self.async_update_listeners()
 
 
     async def async_read_device(self, mac: str) -> ResideoDeviceData:
@@ -551,7 +594,8 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
         self.capture.record_push(event)
 
         # Handle leak detector stream events
-        if event.device_id in self.leak_detectors:
+        mac = event.device_id
+        if mac and mac in self.leak_detectors:
             self._handle_leak_stream_event(event)
             return
 
@@ -589,37 +633,55 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
         prop = (event.property_name or "").lower()
         val = event.value
 
-        _LOGGER.debug("LeakDetector LiveFeed %s %s: %s", mac, event.property_name, val)
+        _LOGGER.info("LeakDetector LiveFeed received for %s (%s): %s", mac, event.property_name, val)
 
         if isinstance(val, dict):
             self._update_leak_detector_from_dict(mac, val)
         else:
+            changed = False
             if "water" in prop or "leak" in prop:
+                old_w = leak.water_present
                 if isinstance(val, bool):
                     leak.water_present = val
                 elif isinstance(val, (int, float)):
                     leak.water_present = bool(val)
                 elif isinstance(val, str):
                     leak.water_present = val.lower() in ("true", "1", "leak", "water", "wet", "alarm")
+                if leak.water_present != old_w:
+                    changed = True
             elif "temp" in prop:
                 try:
-                    leak.temperature = float(val)
+                    val_t = float(val)
+                    if leak.temperature != val_t:
+                        leak.temperature = val_t
+                        changed = True
                 except (ValueError, TypeError):
                     pass
             elif "humid" in prop:
                 try:
-                    leak.humidity = float(val)
+                    val_h = float(val)
+                    if leak.humidity != val_h:
+                        leak.humidity = val_h
+                        changed = True
                 except (ValueError, TypeError):
                     pass
             elif "batt" in prop:
                 try:
-                    leak.battery_level = int(val)
+                    val_b = int(val)
+                    if leak.battery_level != val_b:
+                        leak.battery_level = val_b
+                        changed = True
                 except (ValueError, TypeError):
                     pass
             elif "online" in prop or "connect" in prop:
+                old_on = leak.is_online
                 leak.is_online = bool(val)
+                if leak.is_online != old_on:
+                    changed = True
 
-        self.async_update_listeners()
+            if changed:
+                self.async_update_listeners()
+
 
 
     @callback

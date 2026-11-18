@@ -42,6 +42,26 @@ class ResideoChangeConfirm:
 ResideoEvent = ResideoLiveFeed | ResideoChangeConfirm
 
 
+import base64
+
+
+def clean_device_id(raw_id: Any) -> str | None:
+    """Normalize a device ID (MAC or GraphQL global id) to uppercase 12-char hex MAC."""
+    if not raw_id:
+        return None
+    val = str(raw_id).strip()
+    if "=" in val or len(val) > 20:
+        try:
+            decoded = base64.b64decode(val + "=" * (-len(val) % 4)).decode("utf-8", "ignore")
+            if ":" in decoded:
+                val = decoded.split(":")[-1]
+        except Exception:
+            pass
+    if ":" in val and val.count(":") != 5:
+        val = val.split(":")[-1]
+    return val.replace(":", "").replace("-", "").upper()
+
+
 def parse_event(arg: str | dict[str, Any]) -> ResideoEvent | None:
     """Parse one ``events`` argument into a typed event (``None`` if unparseable/unmodeled)."""
     if isinstance(arg, str):
@@ -56,7 +76,15 @@ def parse_event(arg: str | dict[str, Any]) -> ResideoEvent | None:
 
     notif_type = notif.get("NotificationType")
     body = notif.get("Body") or {}
-    device_id = notif.get("DeviceId")
+    raw_id = (
+        notif.get("DeviceId")
+        or notif.get("deviceId")
+        or body.get("DeviceId")
+        or body.get("deviceId")
+        or body.get("mac")
+        or body.get("macId")
+    )
+    device_id = clean_device_id(raw_id)
 
     if notif_type == "LiveFeedEvent":
         return ResideoLiveFeed(
@@ -78,10 +106,11 @@ def parse_event(arg: str | dict[str, Any]) -> ResideoEvent | None:
         prop_name = body.get("PropertyName") or notif_type
         val = body.get("Value") if "Value" in body else body
         return ResideoLiveFeed(
-            device_id=device_id or body.get("DeviceId"),
+            device_id=device_id,
             property_name=prop_name,
             value=val,
             subscription_expiration=body.get("SubscriptionExpiration"),
         )
     return None
+
 
