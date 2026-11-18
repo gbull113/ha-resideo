@@ -66,6 +66,15 @@ class ResideoCapture:
         self._pushes: dict[str | None, dict[str, _PushType]] = {}
         self._writes: dict[str | None, deque[dict[str, Any]]] = {}
         self._merged_since_read: dict[str, int] = {}
+        self._raw_pushes: deque[dict[str, Any]] = deque(maxlen=50)
+
+    def record_raw_push(self, payload: Any) -> None:
+        """Keep a raw sample of any incoming SignalR frame."""
+        self._raw_pushes.append({"at": _now(), "payload": deepcopy(payload)})
+
+    def raw_pushes(self) -> list[dict[str, Any]]:
+        """Recent raw SignalR frames for diagnostics."""
+        return list(self._raw_pushes)
 
     def record_read(self, mac: str) -> None:
         """Note that the state held for ``mac`` was just replaced by a full read of the cloud."""

@@ -131,6 +131,8 @@ class Resideo:
         *,
         on_connected: ConnectedCallback | None = None,
         on_error: ErrorCallback | None = None,
+        activate_ids: list[str] | None = None,
+        on_raw_message: Callable[[Any], None] | None = None,
     ) -> ResideoStream:
         """Build a :class:`ResideoStream` for one location (caller drives ``async_run``/``async_stop``)."""
         return ResideoStream(
@@ -140,6 +142,8 @@ class Resideo:
             on_event,
             on_connected=on_connected,
             on_error=on_error,
+            activate_ids=activate_ids,
+            on_raw_message=on_raw_message,
         )
 
     # -- writes (passthrough to the client; see spec §4) ----------------------

@@ -59,13 +59,17 @@ class ResideoStream:
         *,
         on_connected: ConnectedCallback | None = None,
         on_error: ErrorCallback | None = None,
+        activate_ids: list[str] | None = None,
+        on_raw_message: Callable[[Any], None] | None = None,
     ) -> None:
         self._client = client
         self._location_node_id = location_node_id
         self._device_ids = list(device_ids)
+        self._activate_ids = list(activate_ids) if activate_ids is not None else None
         self._on_event = on_event
         self._on_connected = on_connected
         self._on_error = on_error
+        self._on_raw_message = on_raw_message
 
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._keepalive_task: asyncio.Task[None] | None = None
@@ -161,8 +165,9 @@ class ResideoStream:
                 raise ResideoConnectionError(f"SignalR handshake error: {obj['error']}")
 
     async def _activate_feed(self) -> None:
-        """Read ``/priority`` per device — the trigger that starts the values feed (spec §9.2)."""
-        for mac in self._device_ids:
+        """Read ``/priority`` per thermostat — the trigger that starts the values feed (spec §9.2)."""
+        targets = self._activate_ids if self._activate_ids is not None else self._device_ids
+        for mac in targets:
             try:
                 await self._client.get_priority(mac)
             except ResideoError as err:
@@ -204,6 +209,8 @@ class ResideoStream:
         if mtype == 1:
             target = obj.get("target")
             _LOGGER.info("SignalR message received: target=%s args=%s", target, str(obj.get("arguments"))[:300])
+            if self._on_raw_message is not None:
+                self._on_raw_message(obj)
             for arg in obj.get("arguments", []) or []:
                 self._dispatch_event(arg)
 

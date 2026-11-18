@@ -301,26 +301,28 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
                 f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices",
                 f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices",
 
-                # Location consumerDevices & waterLeakDetectors collections
-                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/consumerDevices",
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/consumerDevices",
-                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/waterLeakDetectors",
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/waterLeakDetectors",
-                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/waterLeakDetector",
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/waterLeakDetector",
-                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/leakDetectors",
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/leakDetectors",
+                # Location collection with query parameters to expand telemetry
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices?includeStatus=true",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices?includeStatus=true",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices?includeDetails=true",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices?includeDetails=true",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices?includeTelemetry=true",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices?includeTelemetry=true",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices?expand=true",
 
-                # Non-ris paths
-                f"/v2/locations/{loc_raw}/devices",
-                f"/v1/locations/{loc_raw}/devices",
-                f"/v2/locations/{loc_uuid}/devices",
-                f"/v1/locations/{loc_uuid}/devices",
-                f"/v2/locations",
-                f"/v1/locations",
-                f"/v2/devices?locationId={loc_raw}",
-                f"/v2/devices/waterLeakDetectors?locationId={loc_raw}",
-                f"/v2/devices/waterLeakDetector?locationId={loc_raw}",
+                # Location entity itself
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/status",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/status",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/summary",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/devices",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/devices",
+
+                # Honeywell Home / Public API locations
+                "https://api.honeywellhome.com/v2/locations",
+                "https://api.honeywellhome.com/v2/devices/waterLeakDetector",
+                "https://api.honeywell.com/v2/locations",
             ]
             for loc_ep in loc_candidates:
                 if not loc_raw or loc_ep in queried_locations:
@@ -350,77 +352,48 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
             dev_raw = leak.device_id_raw or ""
 
             candidates = [
-                # 1. waterLeakDetectors (plural, the standard Resideo collection route)
-                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}",
-                f"/ris-public-api/api/v1/devices/waterLeakDetectors/{mac}",
-                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}?locationId={loc_raw}",
-                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}?locationId={loc_uuid}",
+                # 1. Single device under the 200 Location collection
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{mac}",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices/{mac}",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_raw}",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_raw}",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_uuid}",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_uuid}",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{dev_raw}",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{mac}/info",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{mac}/status",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_uuid}/info",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_uuid}/status",
+
+                # 2. Devices endpoints with /info (proven pattern from shutOffValves)
+                f"/ris-public-api/api/v1/devices/waterLeakDetectors/{mac}/info",
+                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}/info",
+                f"/ris-public-api/api/v1/devices/waterLeakDetector/{mac}/info",
+                f"/ris-public-api/api/v2/devices/waterLeakDetector/{mac}/info",
+                f"/ris-public-api/api/v1/devices/leakDetectors/{mac}/info",
+                f"/ris-public-api/api/v2/devices/leakDetectors/{mac}/info",
+                f"/ris-public-api/api/v1/devices/leakDetector/{mac}/info",
+                f"/ris-public-api/api/v2/devices/leakDetector/{mac}/info",
+                f"/ris-public-api/api/v1/devices/wld3/{mac}/info",
+                f"/ris-public-api/api/v1/devices/wld/{mac}/info",
+                f"/ris-public-api/api/v1/devices/waterSensors/{mac}/info",
+                f"/ris-public-api/api/v1/devices/water/{mac}/info",
+                f"/ris-public-api/api/v1/devices/{mac}/info",
+                f"/ris-public-api/api/v2/devices/{mac}/info",
+                f"/ris-public-api/api/v1/devices/{cd_uuid}/info",
+                f"/ris-public-api/api/v1/devices/shutOffValves/{mac}/info",
+
+                # 3. Direct devices endpoints with query params
                 f"/ris-public-api/api/v1/devices/waterLeakDetectors/{mac}?locationId={loc_raw}",
-                f"/ris-public-api/api/v1/devices/waterLeakDetectors/{mac}?locationId={loc_uuid}",
-                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}/status",
-                f"/ris-public-api/api/v1/devices/waterLeakDetectors/{mac}/status",
-                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}/state",
-                f"/ris-public-api/api/v1/devices/waterLeakDetectors/{mac}/state",
-                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{cd_raw}",
-                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{cd_uuid}",
-
-                # 2. waterLeakDetector (singular)
-                f"/ris-public-api/api/v2/devices/waterLeakDetector/{mac}",
-                f"/ris-public-api/api/v1/devices/waterLeakDetector/{mac}",
-                f"/ris-public-api/api/v2/devices/waterLeakDetector/{mac}?locationId={loc_raw}",
-                f"/ris-public-api/api/v2/devices/waterLeakDetector/{mac}?locationId={loc_uuid}",
                 f"/ris-public-api/api/v1/devices/waterLeakDetector/{mac}?locationId={loc_raw}",
+                f"/ris-public-api/api/v1/devices/waterLeakDetectors/{mac}?locationId={loc_uuid}",
                 f"/ris-public-api/api/v1/devices/waterLeakDetector/{mac}?locationId={loc_uuid}",
-                f"/ris-public-api/api/v2/devices/waterLeakDetector/{cd_raw}",
-                f"/ris-public-api/api/v2/devices/waterLeakDetector/{cd_uuid}",
 
-                # 3. leakDetectors and leakDetector
-                f"/ris-public-api/api/v2/devices/leakDetectors/{mac}",
-                f"/ris-public-api/api/v1/devices/leakDetectors/{mac}",
-                f"/ris-public-api/api/v2/devices/leakDetectors/{mac}?locationId={loc_raw}",
-                f"/ris-public-api/api/v2/devices/leakDetectors/{mac}?locationId={loc_uuid}",
-                f"/ris-public-api/api/v2/devices/leakDetector/{mac}",
-                f"/ris-public-api/api/v1/devices/leakDetector/{mac}",
-                f"/ris-public-api/api/v2/devices/leakDetector/{mac}?locationId={loc_raw}",
-                f"/ris-public-api/api/v2/devices/leakDetector/{mac}?locationId={loc_uuid}",
-
-                # 4. consumerDevices direct routes
-                f"/ris-public-api/api/v2/consumerDevices/{cd_raw}",
-                f"/ris-public-api/api/v1/consumerDevices/{cd_raw}",
-                f"/ris-public-api/api/v2/consumerDevices/{cd_uuid}",
-                f"/ris-public-api/api/v1/consumerDevices/{cd_uuid}",
-                f"/ris-public-api/api/v2/consumerDevices/{mac}",
-                f"/ris-public-api/api/v1/consumerDevices/{mac}",
-                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/consumerDevices/{cd_raw}",
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/consumerDevices/{cd_raw}",
-                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/consumerDevices/{mac}",
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/consumerDevices/{mac}",
-
-                # 5. Generic /devices/{mac} without device type
-                f"/ris-public-api/api/v2/devices/{mac}",
-                f"/ris-public-api/api/v1/devices/{mac}",
-                f"/ris-public-api/api/v2/devices/{mac}?locationId={loc_raw}",
-                f"/ris-public-api/api/v2/devices/{mac}?locationId={loc_uuid}",
-                f"/ris-public-api/api/v1/devices/{mac}?locationId={loc_raw}",
-                f"/ris-public-api/api/v1/devices/{mac}?locationId={loc_uuid}",
-
-                # 6. Non-ris paths
-                f"/v2/devices/waterLeakDetectors/{mac}",
-                f"/v1/devices/waterLeakDetectors/{mac}",
-                f"/v2/devices/waterLeakDetectors/{mac}?locationId={loc_raw}",
-                f"/v2/devices/waterLeakDetectors/{mac}?locationId={loc_uuid}",
-                f"/v2/devices/waterLeakDetector/{mac}",
-                f"/v1/devices/waterLeakDetector/{mac}",
-                f"/v2/devices/waterLeakDetector/{mac}?locationId={loc_raw}",
-                f"/v2/devices/{mac}",
-                f"/v1/devices/{mac}",
-                f"/v2/devices/{mac}?locationId={loc_raw}",
-                f"/v2/devices/{mac}?locationId={loc_uuid}",
-
-                # 7. devsrv
-                f"/devsrv/api/v2/device/{mac}",
-                f"/devsrv/api/v1/device/{mac}",
-                f"/devsrv/api/v2/devices/{mac}",
+                # 4. Honeywell Home / Public API endpoints
+                f"https://api.honeywellhome.com/v2/devices/waterLeakDetectors/{mac}?locationId={loc_uuid}",
+                f"https://api.honeywellhome.com/v2/devices/waterLeakDetector/{mac}?locationId={loc_uuid}",
+                f"https://api.honeywell.com/v2/devices/waterLeakDetector/{mac}",
+                f"https://api.honeywell.com/v2/devices/waterLeakDetectors/{mac}",
             ]
             for endpoint in candidates:
                 if not endpoint:
@@ -436,29 +409,6 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
                 except Exception as err:
                     self.probe_results[endpoint] = {"error": str(err)}
                     _LOGGER.debug("PROBE [ERR]: %s -> %s", endpoint, err)
-
-            # 8. GraphQL probe
-            for gql_ep in [
-                "/ris-public-api/api/graphql",
-                "/ris-public-api/graphql",
-                "/graphql",
-                "/api/graphql",
-            ]:
-                if gql_ep in queried_locations:
-                    continue
-                queried_locations.add(gql_ep)
-                try:
-                    gql_body = {
-                        "query": f'query {{ node(id: "{cd_raw}") {{ id ... on ConsumerDevice {{ id name }} }} }}'
-                    }
-                    gql_data = await self.api.client.post(gql_ep, json=gql_body)
-                    self.probe_results[f"POST {gql_ep}"] = {"status": 200, "data": gql_data}
-                    _LOGGER.warning("PROBE GQL SUCCESS [200]: %s -> %s", gql_ep, str(gql_data)[:300])
-                    self._update_leak_detector_from_dict(mac, gql_data)
-                except ResideoApiError as err:
-                    self.probe_results[f"POST {gql_ep}"] = {"status": err.status, "body": str(err.body)[:100]}
-                except Exception as err:
-                    self.probe_results[f"POST {gql_ep}"] = {"error": str(err)}
 
     def _update_leak_detector_from_dict(self, mac: str, data: Any) -> None:
         if mac not in self.leak_detectors:
@@ -799,11 +749,13 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
         failure raises ``ConfigEntryNotReady`` / ``ConfigEntryAuthFailed`` so setup is retried —
         push is the contract, so we never proceed without it.
         """
-        known = set(self._macs) | set(self._leak_macs)
+        thermostats = set(self._macs)
+        known = thermostats | set(self._leak_macs)
         for target in self._targets:
             device_ids = [m for m in target.device_ids if m in known]
             if not device_ids or not target.node_id:
                 continue
+            activate_ids = [m for m in device_ids if m in thermostats]
             self._streams.append(
                 self.api.create_stream(
                     target.node_id,
@@ -811,6 +763,8 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
                     self._on_stream_event,
                     on_connected=self._on_stream_connected,
                     on_error=self._on_stream_error,
+                    activate_ids=activate_ids,
+                    on_raw_message=self._on_stream_raw,
                 )
             )
         total_devices = len(self._macs) + len(self._leak_macs)
@@ -961,6 +915,11 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
                 self.async_update_listeners()
 
 
+
+    @callback
+    def _on_stream_raw(self, msg: Any) -> None:
+        """Capture raw SignalR frame for diagnostics."""
+        self.capture.record_raw_push(msg)
 
     @callback
     def schedule_resync(self) -> None:

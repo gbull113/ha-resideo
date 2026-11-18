@@ -79,10 +79,15 @@ def parse_event(arg: str | dict[str, Any]) -> ResideoEvent | None:
     raw_id = (
         notif.get("DeviceId")
         or notif.get("deviceId")
+        or notif.get("id")
+        or notif.get("consumerDeviceId")
         or body.get("DeviceId")
         or body.get("deviceId")
         or body.get("mac")
         or body.get("macId")
+        or body.get("id")
+        or body.get("consumerDeviceId")
+        or body.get("sourceDeviceId")
     )
     device_id = clean_device_id(raw_id)
 
