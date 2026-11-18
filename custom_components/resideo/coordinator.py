@@ -8,10 +8,25 @@ Azure SignalR stream and is merged into the cached shadow. If the stream fails, 
 
 from __future__ import annotations
 
+import base64
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
+
+
+def _decode_b64(raw_id: str | None) -> str:
+    """Decode a base64 GraphQL ID to its trailing UUID/identifier."""
+    if not raw_id:
+        return ""
+    try:
+        decoded = base64.b64decode(raw_id + "=" * (-len(raw_id) % 4)).decode("utf-8", "ignore")
+        if ":" in decoded:
+            return decoded.split(":", 1)[1]
+        return decoded
+    except Exception:
+        return raw_id
+
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -86,6 +101,7 @@ class ResideoLeakDetectorData:
     location_name: str | None = None
     location_id: str | None = None
     account_id: str | None = None
+    consumer_device_id: str | None = None
     model: str | None = None
     product_name: str | None = None
     sku: str | None = None
@@ -119,6 +135,7 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
         self.api = api
         # What the cloud pushed and how it answered our writes, for the diagnostics download.
         self.capture = capture
+        self.probe_results: dict[str, Any] = {}
         self._macs: list[str] = []
         self._leak_macs: list[str] = []
         self.leak_detectors: dict[str, ResideoLeakDetectorData] = {}
@@ -174,6 +191,7 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
                     location_name=d.location,
                     location_id=d.attributes.get("locationId"),
                     account_id=d.attributes.get("accountId"),
+                    consumer_device_id=d.attributes.get("consumerDeviceId"),
                     model=d.model or "LeakDetector_L1_R",
                     product_name=prod.get("productName") or "L1 WiFi Water Leak & Freeze Detector",
                     sku=d.attributes.get("sku"),
@@ -281,24 +299,71 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
 
         # Probe candidate telemetry endpoints for each leak detector
         for mac, leak in self.leak_detectors.items():
-            loc_id = leak.location_id
+            acc_raw = leak.account_id or ""
+            acc_uuid = _decode_b64(acc_raw)
+            loc_raw = leak.location_id or ""
+            loc_uuid = _decode_b64(loc_raw)
+            cd_raw = leak.consumer_device_id or ""
+            cd_uuid = _decode_b64(cd_raw)
+
             candidates = [
-                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}?locationId={loc_id}",
-                f"/ris-public-api/api/v1/devices/waterLeakDetectors/{mac}?locationId={loc_id}",
+                # 1. Location-scoped device paths with raw base64 IDs
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{mac}",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_raw}",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_uuid}",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{mac}/status",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_raw}/status",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{mac}/state",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/waterLeakDetectors/{mac}",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/waterLeakDetectors/{mac}",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/status",
+
+                # 2. Location-scoped device paths with decoded UUIDs
+                f"/ris-public-api/api/v1/accounts/{acc_uuid}/locations/{loc_uuid}/devices/{mac}",
+                f"/ris-public-api/api/v1/accounts/{acc_uuid}/locations/{loc_uuid}/devices/{cd_uuid}",
+                f"/ris-public-api/api/v1/accounts/{acc_uuid}/locations/{loc_uuid}/status",
+
+                # 3. v2 Location-scoped
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices/{mac}",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_raw}",
+
+                # 4. Global waterLeakDetectors endpoints
+                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}?locationId={loc_raw}",
+                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}?locationId={loc_uuid}",
+                f"/ris-public-api/api/v1/devices/waterLeakDetectors/{mac}?locationId={loc_raw}",
+                f"/ris-public-api/api/v1/devices/waterLeakDetectors/{mac}?locationId={loc_uuid}",
                 f"/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}",
                 f"/ris-public-api/api/v1/devices/waterLeakDetectors/{mac}",
-                f"/ris-public-api/api/v2/devices/waterLeakDetector/{mac}?locationId={loc_id}",
-                f"/ris-public-api/api/v1/devices/waterLeakDetector/{mac}?locationId={loc_id}",
+                f"/ris-public-api/api/v2/devices/waterLeakDetectors?locationId={loc_raw}",
+                f"/ris-public-api/api/v2/devices/waterLeakDetectors?locationId={loc_uuid}",
+                f"/ris-public-api/api/v1/devices/waterLeakDetectors?locationId={loc_raw}",
+
+                # 5. Global generic device endpoints
+                f"/ris-public-api/api/v2/devices/{mac}?locationId={loc_raw}",
+                f"/ris-public-api/api/v2/devices/{mac}?locationId={loc_uuid}",
+                f"/ris-public-api/api/v1/devices/{mac}?locationId={loc_raw}",
+                f"/ris-public-api/api/v1/devices/{mac}?locationId={loc_uuid}",
+                f"/ris-public-api/api/v2/devices/{mac}",
+                f"/ris-public-api/api/v1/devices/{mac}",
+                f"/ris-public-api/api/v2/devices/{mac}/status",
+                f"/ris-public-api/api/v1/devices/{mac}/status",
             ]
             for endpoint in candidates:
+                if not endpoint:
+                    continue
                 try:
                     dev_data = await self.api.client.get(endpoint)
+                    self.probe_results[endpoint] = {"status": 200, "data": dev_data}
+                    _LOGGER.info("PROBE SUCCESS [200]: %s -> %s", endpoint, str(dev_data)[:200])
                     if isinstance(dev_data, dict):
-                        _LOGGER.debug("Candidate endpoint %s returned data for %s: %s", endpoint, mac, dev_data)
                         self._update_leak_detector_from_dict(mac, dev_data)
-                        break
+                except ResideoApiError as err:
+                    self.probe_results[endpoint] = {"status": err.status, "body": str(err.body)[:100]}
+                    _LOGGER.info("PROBE [%s]: %s", err.status, endpoint)
                 except Exception as err:
-                    _LOGGER.debug("Candidate endpoint %s failed for %s: %s", endpoint, mac, err)
+                    self.probe_results[endpoint] = {"error": str(err)}
+                    _LOGGER.info("PROBE [ERR]: %s -> %s", endpoint, err)
+
 
     def _update_leak_detector_from_dict(self, mac: str, data: dict[str, Any]) -> None:
         if mac not in self.leak_detectors or not isinstance(data, dict):
