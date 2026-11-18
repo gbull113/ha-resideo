@@ -18,7 +18,11 @@ from .aioresideo import (
     ResideoThermostat,
 )
 from .const import DOMAIN, MANUFACTURER
-from .coordinator import ResideoDataUpdateCoordinator, ResideoDeviceData
+from .coordinator import (
+    ResideoDataUpdateCoordinator,
+    ResideoDeviceData,
+    ResideoLeakDetectorData,
+)
 
 # After a write, force a confirming refresh this many seconds later — long enough for the
 # device to apply the command and the shadow to reflect it (~8s observed live).
@@ -41,6 +45,48 @@ def thermostat_device_info(mac: str, device: ResideoThermostat | None) -> Device
         sw_version=device.firmware_version if device else None,
         serial_number=device.serial_number if device else None,
     )
+
+
+def leak_detector_device_info(
+    mac: str, leak: ResideoLeakDetectorData | None
+) -> DeviceInfo:
+    """Device-registry info for one water leak detector (keyed by MAC)."""
+    return DeviceInfo(
+        identifiers={(DOMAIN, mac)},
+        connections={(dr.CONNECTION_NETWORK_MAC, dr.format_mac(mac))},
+        manufacturer=MANUFACTURER,
+        name=(leak.name if leak else None) or f"Resideo Leak Detector {mac}",
+        model=(leak.model if leak else None) or "LeakDetector_L1_R",
+        sw_version=None,
+        serial_number=mac,
+    )
+
+
+class ResideoLeakEntity(CoordinatorEntity[ResideoDataUpdateCoordinator]):
+    """Base entity bound to one Resideo water leak detector (keyed by MAC)."""
+
+    _attr_has_entity_name = True
+    _requires_device_online: bool = True
+
+    def __init__(self, coordinator: ResideoDataUpdateCoordinator, mac: str) -> None:
+        super().__init__(coordinator)
+        self._mac = mac
+
+    @property
+    def leak_data(self) -> ResideoLeakDetectorData | None:
+        return self.coordinator.leak_detectors.get(self._mac)
+
+    @property
+    def available(self) -> bool:
+        leak = self.leak_data
+        if not super().available or leak is None:
+            return False
+        return leak.is_online or not self._requires_device_online
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return leak_detector_device_info(self._mac, self.leak_data)
+
 
 
 class ResideoEntity(CoordinatorEntity[ResideoDataUpdateCoordinator]):

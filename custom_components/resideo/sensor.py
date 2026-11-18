@@ -36,8 +36,10 @@ from .coordinator import (
     ResideoConfigEntry,
     ResideoDataUpdateCoordinator,
     ResideoDeviceData,
+    ResideoLeakDetectorData,
 )
-from .entity import ResideoAccessoryEntity, ResideoEntity
+from .entity import ResideoAccessoryEntity, ResideoEntity, ResideoLeakEntity
+
 
 try:
     from homeassistant.const import UnitOfRatio
@@ -397,7 +399,49 @@ async def async_setup_entry(
                 for desc in ACCESSORY_SENSORS
                 if desc.exists_fn(accessory)
             )
+    for mac, leak in coordinator.leak_detectors.items():
+        entities.append(
+            ResideoLeakSensor(
+                coordinator,
+                mac,
+                SensorEntityDescription(
+                    key="temperature",
+                    device_class=SensorDeviceClass.TEMPERATURE,
+                    state_class=SensorStateClass.MEASUREMENT,
+                    native_unit_of_measurement=UnitOfTemperature.FAHRENHEIT,
+                ),
+                value_fn=lambda l: l.temperature,
+            )
+        )
+        entities.append(
+            ResideoLeakSensor(
+                coordinator,
+                mac,
+                SensorEntityDescription(
+                    key="humidity",
+                    device_class=SensorDeviceClass.HUMIDITY,
+                    state_class=SensorStateClass.MEASUREMENT,
+                    native_unit_of_measurement=PERCENTAGE,
+                ),
+                value_fn=lambda l: l.humidity,
+            )
+        )
+        entities.append(
+            ResideoLeakSensor(
+                coordinator,
+                mac,
+                SensorEntityDescription(
+                    key="battery",
+                    device_class=SensorDeviceClass.BATTERY,
+                    state_class=SensorStateClass.MEASUREMENT,
+                    native_unit_of_measurement=PERCENTAGE,
+                    entity_category=DIAG,
+                ),
+                value_fn=lambda l: l.battery_level,
+            )
+        )
     async_add_entities(entities)
+
 
 
 class ResideoSensor(ResideoEntity, SensorEntity):
@@ -448,3 +492,28 @@ class ResideoAccessorySensor(ResideoAccessoryEntity, SensorEntity):
     def native_value(self) -> StateType:
         accessory = self.accessory
         return self.entity_description.value_fn(accessory) if accessory else None
+
+
+class ResideoLeakSensor(ResideoLeakEntity, SensorEntity):
+    """A sensor reading temperature, humidity, or battery off a leak detector."""
+
+    entity_description: SensorEntityDescription
+
+    def __init__(
+        self,
+        coordinator: ResideoDataUpdateCoordinator,
+        mac: str,
+        description: SensorEntityDescription,
+        *,
+        value_fn: Callable[[ResideoLeakDetectorData], StateType],
+    ) -> None:
+        super().__init__(coordinator, mac)
+        self.entity_description = description
+        self._attr_unique_id = f"{mac}_{description.key}"
+        self._value_fn = value_fn
+
+    @property
+    def native_value(self) -> StateType:
+        leak = self.leak_data
+        return self._value_fn(leak) if leak else None
+

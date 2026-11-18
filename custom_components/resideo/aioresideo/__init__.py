@@ -94,7 +94,16 @@ class Resideo:
         """Only the thermostats from the account graph."""
         return [d for d in await self.async_get_devices() if d.is_thermostat]
 
+    async def async_get_leak_detectors(self) -> list[ResideoAccountDevice]:
+        """Only the water leak detectors from the account graph."""
+        return [d for d in await self.async_get_devices() if d.is_leak_detector]
+
+    async def async_get_location_devices(self, account_id: str, location_id: str) -> dict[str, Any]:
+        """Fetch all devices at a location."""
+        return await self.client.get_location_devices(account_id, location_id)
+
     # -- reads ----------------------------------------------------------------
+
     async def async_get_device(self, mac: str) -> ResideoThermostat:
         return ResideoThermostat(await self.client.get_device(mac))
 

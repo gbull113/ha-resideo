@@ -114,8 +114,15 @@ def _account_devices(accounts: dict[str, Any]) -> list[dict[str, Any]]:
     """
     devices = (ResideoAccountDevice(d) for d in ResideoClient.iter_devices(accounts))
     return [
-        {"model": d.model, "kind": d.device_kind, "supported": d.is_thermostat} for d in devices
+        {
+            "model": d.model,
+            "kind": d.device_kind,
+            "supported": d.is_thermostat or d.is_leak_detector,
+            "is_leak_detector": d.is_leak_detector,
+        }
+        for d in devices
     ]
+
 
 
 _ABSENT = object()
@@ -180,7 +187,7 @@ async def async_get_config_entry_diagnostics(
     snapshots, the pushes received, the commands sent, and the drift from the cloud."""
     coordinator = entry.runtime_data
     capture = coordinator.capture
-    macs = tuple(coordinator.data)
+    macs = tuple(coordinator.data) + tuple(coordinator.leak_detectors)
     # The account graph isn't cached (setup only keeps what it derives from it), so fetch it
     # fresh; a failure must not cost the user the device snapshots they came for.
     account_devices: list[dict[str, Any]] = []
@@ -207,9 +214,25 @@ async def async_get_config_entry_diagnostics(
                 }
                 for mac, data in coordinator.data.items()
             ],
+            "leak_detectors": [
+                {
+                    "mac": mac,
+                    "name": leak.name,
+                    "model": leak.model,
+                    "product_name": leak.product_name,
+                    "is_online": leak.is_online,
+                    "water_present": leak.water_present,
+                    "temperature": leak.temperature,
+                    "humidity": leak.humidity,
+                    "battery_level": leak.battery_level,
+                    "pushes": capture.pushes(mac),
+                }
+                for mac, leak in coordinator.leak_detectors.items()
+            ],
         },
         macs,
     )
-    for mac, device in zip(macs, diagnostics["devices"], strict=True):
+    for mac, device in zip(tuple(coordinator.data), diagnostics["devices"], strict=True):
         device["drift"] = _redact(await _drift(coordinator, mac, device, macs), TO_REDACT, macs)
     return diagnostics
+

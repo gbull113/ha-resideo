@@ -76,7 +76,57 @@ class ResideoAccountDevice(ResideoBaseObject):
         return decoded.split(":", 1)[0] or None
 
     @property
+    def is_leak_detector(self) -> bool:
+        """True if this device is a water leak & freeze detector (e.g. L1/WLD3)."""
+        gdt = (self.global_device_type or "").lower()
+        prod = self.attributes.get("product") or {}
+        p_fam = (prod.get("productFamily") or "").lower()
+        p_name = (prod.get("productName") or "").lower()
+        p_plat = (prod.get("productPlatform") or "").lower()
+        p_cats = [c.lower() for c in (prod.get("productCategories") or [])]
+        dtype = (self.attributes.get("deviceType") or "").lower()
+        ftype = (self.attributes.get("factoryDeviceType") or "").lower()
+        return (
+            "leakdetector" in gdt
+            or "wld" in gdt
+            or "leak" in gdt
+            or "leakdetector" in p_fam
+            or "water" in p_cats
+            or "waterleak" in dtype
+            or "leakdetector" in ftype
+            or "wld" in p_plat
+            or "leak" in p_name
+        )
+
+    @property
     def is_thermostat(self) -> bool:
+        if self.is_leak_detector:
+            return False
         kind = (self.device_kind or "").lower()
         gdt = (self.global_device_type or "").lower()
         return "thermostat" in kind or "thermostat" in gdt or "lyric" in gdt
+
+    @property
+    def product(self) -> dict:
+        return self.attributes.get("product") or {}
+
+    @property
+    def product_name(self) -> str | None:
+        return self.product.get("productName")
+
+    @property
+    def location_id(self) -> str | None:
+        return self.attributes.get("locationId")
+
+    @property
+    def account_id(self) -> str | None:
+        return self.attributes.get("accountId")
+
+    @property
+    def consumer_device_id(self) -> str | None:
+        return self.attributes.get("consumerDeviceId")
+
+    @property
+    def sku(self) -> str | None:
+        return self.attributes.get("sku")
+

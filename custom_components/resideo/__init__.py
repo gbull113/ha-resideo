@@ -24,7 +24,8 @@ from .availability import async_clear_unavailable
 from .capture import ResideoCapture
 from .const import CONF_REFRESH_TOKEN, DOMAIN, PLATFORMS
 from .coordinator import ResideoConfigEntry, ResideoDataUpdateCoordinator
-from .entity import thermostat_device_info
+from .entity import leak_detector_device_info, thermostat_device_info
+
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -85,6 +86,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ResideoConfigEntry) -> b
             config_entry_id=entry.entry_id,
             **thermostat_device_info(mac, data.thermostat),
         )
+    for mac, leak in coordinator.leak_detectors.items():
+        device_registry.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            **leak_detector_device_info(mac, leak),
+        )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
@@ -116,7 +122,10 @@ async def async_remove_config_entry_device(
         current.add(mac)
         for room, accessory in data.rooms.air_sensor_accessories():
             current.add(f"{mac}_room{room.id}_acc{accessory.accessory_id}")
+    for mac in coordinator.leak_detectors:
+        current.add(mac)
     return not any(
         domain == DOMAIN and identifier in current
         for domain, identifier in device_entry.identifiers
     )
+

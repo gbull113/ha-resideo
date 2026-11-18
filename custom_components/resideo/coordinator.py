@@ -77,6 +77,26 @@ class ResideoDeviceData:
     priority: ResideoPriority  # /priority — room priority/selection (may be empty)
 
 
+@dataclass
+class ResideoLeakDetectorData:
+    """Everything the coordinator holds for one water leak & freeze detector."""
+
+    mac: str
+    name: str
+    location_name: str | None = None
+    location_id: str | None = None
+    account_id: str | None = None
+    model: str | None = None
+    product_name: str | None = None
+    sku: str | None = None
+    is_online: bool = True
+    water_present: bool = False
+    temperature: float | None = None
+    humidity: float | None = None
+    battery_level: int | None = None
+    last_updated: float | None = None
+
+
 class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDeviceData]]):
     """Holds the shadow + room sensors of every thermostat, fed by the SignalR live stream."""
 
@@ -100,6 +120,8 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
         # What the cloud pushed and how it answered our writes, for the diagnostics download.
         self.capture = capture
         self._macs: list[str] = []
+        self._leak_macs: list[str] = []
+        self.leak_detectors: dict[str, ResideoLeakDetectorData] = {}
         self._targets: list[ResideoLocation] = []
         # The account's country, read once at setup. It decides the unit of the outdoor
         # temperature, the one reading that isn't always °F (see ``outdoor_temperature_unit``).
@@ -127,7 +149,7 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
         self._setpoint_limit_overrides: dict[str, dict[str, Any]] = {}
 
     async def _async_setup(self) -> None:
-        """One-time discovery from the account graph: thermostats, SignalR targets, country."""
+        """One-time discovery from the account graph: thermostats, leak detectors, SignalR targets, country."""
         try:
             accounts = await self.api.async_get_accounts()
         except ResideoAuthError as err:
@@ -141,7 +163,25 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
         self._targets = ResideoClient.iter_locations(accounts)
         self.country_code = ResideoClient.country_code(accounts)
         self._macs = [d.mac for d in devices if d.is_thermostat and d.mac]
-        if not self._macs:
+        self._leak_macs = [d.mac for d in devices if d.is_leak_detector and d.mac]
+
+        for d in devices:
+            if d.is_leak_detector and d.mac:
+                prod = d.attributes.get("product") or {}
+                self.leak_detectors[d.mac] = ResideoLeakDetectorData(
+                    mac=d.mac,
+                    name=d.name or f"Leak Detector {d.mac}",
+                    location_name=d.location,
+                    location_id=d.attributes.get("locationId"),
+                    account_id=d.attributes.get("accountId"),
+                    model=d.model or "LeakDetector_L1_R",
+                    product_name=prod.get("productName") or "L1 WiFi Water Leak & Freeze Detector",
+                    sku=d.attributes.get("sku"),
+                    is_online=True,
+                    water_present=False,
+                )
+
+        if not self._macs and not self._leak_macs:
             # A stable account-level condition (e.g. only Lyric/LCC-platform devices, which
             # live on a system this API can't reach) -> fail setup rather than retry.
             if devices:
@@ -150,26 +190,28 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
                     for d in devices
                 )
                 raise ConfigEntryError(
-                    f"No supported thermostats in this Resideo account — found: {found}. "
-                    "This integration reads thermostats on the platform the Resideo Connect app "
-                    "(formerly First Alert) uses; a thermostat that only appears in the older "
+                    f"No supported devices in this Resideo account — found: {found}. "
+                    "This integration reads devices on the platform the Resideo Connect app "
+                    "(formerly First Alert) uses; a device that only appears in the older "
                     "Resideo - Smart Home app (formerly Honeywell Home) is on a separate Resideo "
                     "system it cannot reach."
                 )
             raise ConfigEntryError(
-                "No devices found in this Resideo account. If your thermostat only appears in the "
+                "No devices found in this Resideo account. If your device only appears in the "
                 "older Resideo - Smart Home app (formerly Honeywell Home), it is on a separate "
-                "Resideo system this integration cannot reach — use Home Assistant's built-in "
-                "Lyric integration for those."
+                "Resideo system this integration cannot reach."
             )
         _LOGGER.debug(
-            "Discovered %d thermostat(s) %s across %d location(s), account country %s",
+            "Discovered %d thermostat(s) %s and %d leak detector(s) %s across %d location(s), account country %s",
             len(self._macs),
             self._macs,
+            len(self._leak_macs),
+            self._leak_macs,
             len(self._targets),
             self.country_code,
         )
         async_clear_unavailable(self.hass, self.config_entry)
+
 
     async def _async_update_data(self) -> dict[str, ResideoDeviceData]:
         """Bootstrap / resync read (NOT a periodic poll).
@@ -210,9 +252,95 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
                 len(self._macs),
                 "; ".join(failures),
             )
+        if self._leak_macs:
+            await self._async_refresh_leak_detectors()
         # Something got through, so the cloud is answering us again.
         async_clear_unavailable(self.hass, self.config_entry)
         return result
+
+    async def _async_refresh_leak_detectors(self) -> None:
+        """Best-effort initial/resync refresh of leak detectors from location devices endpoint."""
+        queried_locations: set[tuple[str, str]] = set()
+        for leak in self.leak_detectors.values():
+            if leak.account_id and leak.location_id:
+                loc_key = (leak.account_id, leak.location_id)
+                if loc_key in queried_locations:
+                    continue
+                queried_locations.add(loc_key)
+                try:
+                    resp = await self.api.async_get_location_devices(leak.account_id, leak.location_id)
+                    if isinstance(resp, dict) and "data" in resp:
+                        for item in resp.get("data") or []:
+                            dev = item.get("device") or {}
+                            mac = dev.get("deviceId")
+                            if mac and mac in self.leak_detectors:
+                                if dev.get("sku"):
+                                    self.leak_detectors[mac].sku = dev["sku"]
+                                self._update_leak_detector_from_dict(mac, item)
+                except Exception as err:
+                    _LOGGER.debug("Could not refresh location devices for %s: %s", leak.location_id, err)
+
+    def _update_leak_detector_from_dict(self, mac: str, data: dict[str, Any]) -> None:
+        if mac not in self.leak_detectors:
+            return
+        leak = self.leak_detectors[mac]
+
+        # 1. Moisture / Water Present
+        for key in ("waterPresent", "water_present", "WaterPresent", "leakDetected"):
+            if key in data:
+                leak.water_present = bool(data[key])
+                break
+
+        # Alarms list
+        alarms = data.get("currentAlarms") or data.get("alarms") or []
+        for alarm in alarms:
+            alarm_str = str(alarm).lower()
+            if "leak" in alarm_str or "water" in alarm_str:
+                leak.water_present = True
+
+        # 2. Temperature / Humidity
+        readings = data.get("currentSensorReadings") or data.get("sensorReadings") or {}
+        temp = (
+            readings.get("temperature")
+            or data.get("temperature")
+            or data.get("indoorTemperature")
+        )
+        if temp is not None:
+            try:
+                leak.temperature = float(temp)
+            except (ValueError, TypeError):
+                pass
+
+        hum = (
+            readings.get("humidity")
+            or data.get("humidity")
+            or data.get("indoorHumidity")
+        )
+        if hum is not None:
+            try:
+                leak.humidity = float(hum)
+            except (ValueError, TypeError):
+                pass
+
+        # 3. Battery
+        battery = (
+            data.get("batteryRemaining")
+            or data.get("battery")
+            or data.get("batteryLevel")
+            or readings.get("batteryRemaining")
+        )
+        if battery is not None:
+            try:
+                leak.battery_level = int(battery)
+            except (ValueError, TypeError):
+                pass
+
+        # 4. Connectivity / Online
+        if "isOnline" in data:
+            leak.is_online = bool(data["isOnline"])
+        elif "online" in data:
+            leak.is_online = bool(data["online"])
+
 
     async def async_read_device(self, mac: str) -> ResideoDeviceData:
         """Read one thermostat's full snapshot.
@@ -350,7 +478,7 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
         failure raises ``ConfigEntryNotReady`` / ``ConfigEntryAuthFailed`` so setup is retried —
         push is the contract, so we never proceed without it.
         """
-        known = set(self._macs)
+        known = set(self._macs) | set(self._leak_macs)
         for target in self._targets:
             device_ids = [m for m in target.device_ids if m in known]
             if not device_ids or not target.node_id:
@@ -364,9 +492,10 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
                     on_error=self._on_stream_error,
                 )
             )
+        total_devices = len(self._macs) + len(self._leak_macs)
         if not self._streams:
             raise ConfigEntryNotReady(
-                f"Found {len(self._macs)} thermostat(s), but no account location "
+                f"Found {total_devices} device(s), but no account location "
                 "supports live updates (SignalR)"
             )
 
@@ -420,6 +549,12 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
         # engineered — e.g. every Sensor push is labelled with the thermostat's ids), so it is
         # both sampled for diagnostics and logged, merged or not.
         self.capture.record_push(event)
+
+        # Handle leak detector stream events
+        if event.device_id in self.leak_detectors:
+            self._handle_leak_stream_event(event)
+            return
+
         if not self.data:
             return
         _LOGGER.debug("LiveFeed %s %s: %s", event.device_id, event.property_name, event.value)
@@ -443,6 +578,49 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
         self.capture.record_merge(event.device_id)
         # Pushes the new data AND clears any prior error state -> entities available again.
         self.async_set_updated_data({**self.data, event.device_id: updated})
+
+    @callback
+    def _handle_leak_stream_event(self, event: ResideoLiveFeed) -> None:
+        """Handle real-time push event for a water leak detector."""
+        mac = event.device_id
+        if not mac or mac not in self.leak_detectors:
+            return
+        leak = self.leak_detectors[mac]
+        prop = (event.property_name or "").lower()
+        val = event.value
+
+        _LOGGER.debug("LeakDetector LiveFeed %s %s: %s", mac, event.property_name, val)
+
+        if isinstance(val, dict):
+            self._update_leak_detector_from_dict(mac, val)
+        else:
+            if "water" in prop or "leak" in prop:
+                if isinstance(val, bool):
+                    leak.water_present = val
+                elif isinstance(val, (int, float)):
+                    leak.water_present = bool(val)
+                elif isinstance(val, str):
+                    leak.water_present = val.lower() in ("true", "1", "leak", "water", "wet", "alarm")
+            elif "temp" in prop:
+                try:
+                    leak.temperature = float(val)
+                except (ValueError, TypeError):
+                    pass
+            elif "humid" in prop:
+                try:
+                    leak.humidity = float(val)
+                except (ValueError, TypeError):
+                    pass
+            elif "batt" in prop:
+                try:
+                    leak.battery_level = int(val)
+                except (ValueError, TypeError):
+                    pass
+            elif "online" in prop or "connect" in prop:
+                leak.is_online = bool(val)
+
+        self.async_update_listeners()
+
 
     @callback
     def schedule_resync(self) -> None:

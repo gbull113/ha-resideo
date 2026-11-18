@@ -23,8 +23,10 @@ from .coordinator import (
     ResideoConfigEntry,
     ResideoDataUpdateCoordinator,
     ResideoDeviceData,
+    ResideoLeakDetectorData,
 )
-from .entity import ResideoAccessoryEntity, ResideoEntity
+from .entity import ResideoAccessoryEntity, ResideoEntity, ResideoLeakEntity
+
 
 # Reads are pure push off the coordinator — no per-entity update work to limit.
 PARALLEL_UPDATES = 0
@@ -158,7 +160,33 @@ async def async_setup_entry(
                 for desc in ACCESSORY_BINARY_SENSORS
                 if desc.exists_fn(accessory)
             )
+    for mac, leak in coordinator.leak_detectors.items():
+        entities.append(
+            ResideoLeakBinarySensor(
+                coordinator,
+                mac,
+                BinarySensorEntityDescription(
+                    key="moisture",
+                    device_class=BinarySensorDeviceClass.MOISTURE,
+                ),
+                value_fn=lambda l: l.water_present,
+            )
+        )
+        entities.append(
+            ResideoLeakBinarySensor(
+                coordinator,
+                mac,
+                BinarySensorEntityDescription(
+                    key="online",
+                    device_class=BinarySensorDeviceClass.CONNECTIVITY,
+                    entity_category=DIAG,
+                ),
+                value_fn=lambda l: l.is_online,
+                requires_online=False,
+            )
+        )
     async_add_entities(entities)
+
 
 
 class ResideoBinarySensor(ResideoEntity, BinarySensorEntity):
@@ -208,3 +236,28 @@ class ResideoAccessoryBinarySensor(ResideoAccessoryEntity, BinarySensorEntity):
     def is_on(self) -> bool | None:
         accessory = self.accessory
         return self.entity_description.value_fn(accessory) if accessory else None
+
+
+class ResideoLeakBinarySensor(ResideoLeakEntity, BinarySensorEntity):
+    """A binary sensor for a water leak detector (moisture, connectivity)."""
+
+    def __init__(
+        self,
+        coordinator: ResideoDataUpdateCoordinator,
+        mac: str,
+        description: BinarySensorEntityDescription,
+        *,
+        value_fn: Callable[[ResideoLeakDetectorData], bool | None],
+        requires_online: bool = True,
+    ) -> None:
+        super().__init__(coordinator, mac)
+        self.entity_description = description
+        self._attr_unique_id = f"{mac}_{description.key}"
+        self._value_fn = value_fn
+        self._requires_device_online = requires_online
+
+    @property
+    def is_on(self) -> bool | None:
+        leak = self.leak_data
+        return self._value_fn(leak) if leak else None
+

@@ -243,7 +243,27 @@ class ResideoClient:
         """Rooms + per-accessory sensor values (spec §3). v1 only — 404s under v2."""
         return await self.get(THERMOSTAT_V1.format(mac=mac) + "/group/0/rooms")
 
+    async def get_location_devices(self, account_id: str, location_id: str) -> dict[str, Any]:
+        """Fetch all devices at a location (used for water leak detectors and standalone sensors)."""
+        return await self.get(
+            f"/ris-public-api/api/v1/accounts/{account_id}/locations/{location_id}/devices"
+        )
+
+    async def get_leak_detector(self, mac: str, location_id: str | None = None) -> dict[str, Any] | None:
+        """Fetch leak detector details/status if supported."""
+        params = f"?locationId={location_id}" if location_id else ""
+        for url in [
+            f"/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}{params}",
+            f"/ris-public-api/api/v1/devices/waterLeakDetectors/{mac}{params}",
+        ]:
+            try:
+                return await self.get(url)
+            except ResideoError:
+                continue
+        return None
+
     # -- real-time push (SignalR; see resideo-api-spec.md §9.2) ---------------
+
     async def async_signalr_negotiate(self) -> dict[str, str]:
         """Full two-step SignalR negotiate. Returns ``{"wss_url", "access_token"}``.
 
@@ -504,13 +524,19 @@ class ResideoClient:
                         {
                             "name": cd.get("name") or dev.get("deviceId"),
                             "location": loc.get("name"),
+                            "locationId": loc.get("id"),
+                            "accountId": ca.get("id") or loc.get("consumerAccountId"),
                             "deviceId": dev.get("deviceId"),
                             "globalDeviceType": dev.get("globalDeviceType"),
                             "globalId": dev.get("id"),
                             "consumerDeviceId": cd.get("id"),
+                            "product": dev.get("product") or {},
+                            "deviceType": dev.get("deviceType"),
+                            "sku": dev.get("sku"),
                         }
                     )
         return out
+
 
     @staticmethod
     def country_code(accounts: dict[str, Any]) -> str | None:

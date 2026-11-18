@@ -73,4 +73,15 @@ def parse_event(arg: str | dict[str, Any]) -> ResideoEvent | None:
             change_direction=body.get("ChangeDirection"),
             success=notif_type == "ChangeRequestSuccess",
         )
+    if notif_type:
+        # Fallback for device alerts, alarms, or leak detector events
+        prop_name = body.get("PropertyName") or notif_type
+        val = body.get("Value") if "Value" in body else body
+        return ResideoLiveFeed(
+            device_id=device_id or body.get("DeviceId"),
+            property_name=prop_name,
+            value=val,
+            subscription_expiration=body.get("SubscriptionExpiration"),
+        )
     return None
+
