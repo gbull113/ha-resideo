@@ -156,3 +156,23 @@ class ResideoCapture:
     def writes(self, mac: str) -> list[dict[str, Any]]:
         """The commands sent to ``mac`` and the confirmations received, oldest first."""
         return list(self._writes.get(mac, ()))
+
+    def all_pushes(self) -> dict[str, Any]:
+        """All pushes recorded across all keys, including None or unknown IDs."""
+        res: dict[str, Any] = {}
+        for dev_key, pushes_dict in self._pushes.items():
+            k_str = str(dev_key) if dev_key is not None else "unassigned"
+            res[k_str] = {
+                name: {
+                    "count": push.count,
+                    "first_seen": push.first_seen,
+                    "last_seen": push.last_seen,
+                    "shapes": [
+                        {"count": shape.count, "samples": list(reversed(shape.samples))}
+                        for shape in reversed(push.shapes.values())
+                    ],
+                }
+                for name, push in sorted(pushes_dict.items())
+            }
+        return res
+

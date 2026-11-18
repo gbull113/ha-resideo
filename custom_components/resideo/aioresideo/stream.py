@@ -199,9 +199,11 @@ class ResideoStream:
                     # stall watchdog never catches (server pings keep it "alive") — treat as fatal.
                     self._fatal = f"SubscribeSignalRV2 rejected: {obj['error']}"
                 else:
-                    _LOGGER.debug("SignalR invocation error: %s", obj["error"])
+                    _LOGGER.info("SignalR invocation error: %s", obj["error"])
             return
-        if mtype == 1 and obj.get("target") == "events":
+        if mtype == 1:
+            target = obj.get("target")
+            _LOGGER.info("SignalR message received: target=%s args=%s", target, str(obj.get("arguments"))[:300])
             for arg in obj.get("arguments", []) or []:
                 self._dispatch_event(arg)
 
@@ -209,10 +211,17 @@ class ResideoStream:
         try:
             event = parse_event(arg)  # type: ignore[arg-type]
         except Exception:
-            _LOGGER.debug("Failed to parse SignalR event", exc_info=True)
+            _LOGGER.warning("Failed to parse SignalR event: %s", arg, exc_info=True)
             return
         if event is None:
+            _LOGGER.info("SignalR event parsed as None: %s", str(arg)[:300])
             return
+        _LOGGER.info(
+            "SignalR event dispatched: type=%s device_id=%s prop=%s",
+            type(event).__name__,
+            getattr(event, "device_id", None),
+            getattr(event, "property_name", None),
+        )
         exp = getattr(event, "subscription_expiration", None)
         if exp:
             self._note_expiry(exp)

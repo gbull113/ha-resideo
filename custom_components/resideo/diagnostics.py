@@ -214,6 +214,7 @@ async def async_get_config_entry_diagnostics(
                 }
                 for mac, data in coordinator.data.items()
             ],
+            "all_pushes": capture.all_pushes(),
             "leak_detectors": [
                 {
                     "mac": mac,
