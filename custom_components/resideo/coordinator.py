@@ -104,6 +104,7 @@ class ResideoLeakDetectorData:
     location_id: str | None = None
     account_id: str | None = None
     consumer_device_id: str | None = None
+    device_id_raw: str | None = None
     model: str | None = None
     product_name: str | None = None
     sku: str | None = None
@@ -194,6 +195,7 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
                     location_id=d.attributes.get("locationId"),
                     account_id=d.attributes.get("accountId"),
                     consumer_device_id=d.attributes.get("consumerDeviceId"),
+                    device_id_raw=d.attributes.get("id") or d.attributes.get("globalId"),
                     model=d.model or "LeakDetector_L1_R",
                     product_name=prod.get("productName") or "L1 WiFi Water Leak & Freeze Detector",
                     sku=d.attributes.get("sku"),
@@ -293,18 +295,41 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
             loc_raw = leak.location_id or ""
             loc_uuid = _decode_b64(loc_raw)
 
-            # Probe location devices collections (raw and uuid, v1 and v2)
+            # 1. Location-level device collections & status
             loc_candidates = [
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices",
-                f"/ris-public-api/api/v1/accounts/{acc_uuid}/locations/{loc_uuid}/devices",
+                # Base collection (confirmed 200)
                 f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices",
                 f"/ris-public-api/api/v2/accounts/{acc_uuid}/locations/{loc_uuid}/devices",
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/waterLeakDetectors",
-                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/waterLeakDetectors",
-                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/leakDetectors",
-                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/leakDetectors",
-                f"https://api.resideo.com/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices",
-                f"https://api.resideo.com/ris-public-api/api/v1/accounts/{acc_uuid}/locations/{loc_uuid}/devices",
+                f"/ris-public-api/api/v1/accounts/{acc_uuid}/locations/{loc_uuid}/devices",
+
+                # Query parameters to expand / include telemetry
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices?includeStatus=true",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices?includeState=true",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices?includeTelemetry=true",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices?includeReadings=true",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices?includeSensors=true",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices?details=true",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices?telemetry=true",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices?view=detail",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices?view=full",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices?expand=all",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices?includeStatus=true",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices?includeState=true",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices?includeTelemetry=true",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices?details=true",
+
+                # Location subpaths
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices/status",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/status",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices/state",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/state",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/status",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/status",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/telemetry",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/telemetry",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/summary",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/summary",
             ]
             for loc_ep in loc_candidates:
                 if not loc_raw or loc_ep in queried_locations:
@@ -323,7 +348,7 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
                     self.probe_results[loc_ep] = {"error": str(err)}
                     _LOGGER.debug("PROBE LOCATION [ERR]: %s -> %s", loc_ep, err)
 
-        # Probe candidate telemetry endpoints for each leak detector
+        # 2. Per-device candidate telemetry endpoints
         for mac, leak in self.leak_detectors.items():
             acc_raw = leak.account_id or ""
             acc_uuid = _decode_b64(acc_raw)
@@ -331,73 +356,86 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
             loc_uuid = _decode_b64(loc_raw)
             cd_raw = leak.consumer_device_id or ""
             cd_uuid = _decode_b64(cd_raw)
+            dev_raw = leak.device_id_raw or ""
 
             candidates = [
-                # 1. State endpoints (First Alert convention)
-                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}/state",
-                f"/ris-public-api/api/v2/devices/leakDetectors/{mac}/state",
-                f"/ris-public-api/api/v2/devices/waterLeakDetector/{mac}/state",
-                f"/ris-public-api/api/v2/devices/leakDetector/{mac}/state",
-                f"/ris-public-api/api/v2/devices/waterDetectors/{mac}/state",
-                f"/ris-public-api/api/v2/devices/waterSensors/{mac}/state",
-                f"/ris-public-api/api/v2/devices/leakSensors/{mac}/state",
-                f"/ris-public-api/api/v2/devices/smokeDetectors/{mac}/state",
-                f"/ris-public-api/api/v2/devices/sensors/{mac}/state",
-                f"/ris-public-api/api/v2/devices/{mac}/state",
+                # 1. Thermostat endpoints (since Resideo models this as LyricThermostatDevice!)
+                f"/ris-public-api/api/v2/devices/thermostats/{mac}",
+                f"/ris-public-api/api/v1/devices/thermostats/{mac}",
+                f"/ris-public-api/api/v2/devices/thermostats/{mac}/state",
+                f"/ris-public-api/api/v1/devices/thermostats/{mac}/state",
+                f"/ris-public-api/api/v1/devices/thermostats/{mac}/priority",
+                f"/ris-public-api/api/v1/devices/thermostats/{mac}/group/0/rooms",
+                f"/ris-public-api/api/v2/devices/thermostats/{mac}/configuration",
+                f"/ris-public-api/api/v2/devices/thermostats/{mac}/status",
+                f"/ris-public-api/api/v1/devices/thermostats/{mac}/status",
+                f"/ris-public-api/api/v2/devices/thermostats/{mac}/telemetry",
+                f"/ris-public-api/api/v1/devices/thermostats/{mac}/telemetry",
+                f"/ris-public-api/api/v2/devices/thermostats/{mac}?locationId={loc_raw}",
+                f"/ris-public-api/api/v2/devices/thermostats/{mac}?locationId={loc_uuid}",
 
-                # 2. State endpoints with UUID and base64 ID
-                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{cd_uuid}/state",
-                f"/ris-public-api/api/v2/devices/leakDetectors/{cd_uuid}/state",
-                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{cd_raw}/state",
-                f"/ris-public-api/api/v2/devices/leakDetectors/{cd_raw}/state",
-                f"/ris-public-api/api/v2/devices/{cd_uuid}/state",
-                f"/ris-public-api/api/v2/devices/{cd_raw}/state",
+                # 2. Location-scoped individual device endpoints
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices/{mac}",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{mac}",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices/{mac}/status",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{mac}/status",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices/{mac}/state",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{mac}/state",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_raw}",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_raw}",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_raw}/status",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_raw}/status",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_raw}/state",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_raw}/state",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_uuid}",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_uuid}",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_uuid}/status",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_uuid}/status",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_uuid}/state",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{cd_uuid}/state",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices/{dev_raw}",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{dev_raw}",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices/{dev_raw}/status",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{dev_raw}/status",
+                f"/ris-public-api/api/v2/accounts/{acc_raw}/locations/{loc_raw}/devices/{dev_raw}/state",
+                f"/ris-public-api/api/v1/accounts/{acc_raw}/locations/{loc_raw}/devices/{dev_raw}/state",
 
-                # 3. State endpoints with locationId query param
-                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}/state?locationId={loc_raw}",
-                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}/state?locationId={loc_uuid}",
-                f"/ris-public-api/api/v2/devices/leakDetectors/{mac}/state?locationId={loc_raw}",
-                f"/ris-public-api/api/v2/devices/leakDetectors/{mac}/state?locationId={loc_uuid}",
-
-                # 4. v1 State endpoints
-                f"/ris-public-api/api/v1/devices/waterLeakDetectors/{mac}/state",
-                f"/ris-public-api/api/v1/devices/leakDetectors/{mac}/state",
-                f"/ris-public-api/api/v1/devices/{mac}/state",
-
-                # 5. Direct / shadow endpoints (similar to thermostats)
-                f"/ris-public-api/api/v2/devices/leakDetectors/{mac}",
-                f"/ris-public-api/api/v1/devices/leakDetectors/{mac}",
-                f"/ris-public-api/api/v2/devices/waterLeakDetector/{mac}",
-                f"/ris-public-api/api/v1/devices/waterLeakDetector/{mac}",
-                f"/ris-public-api/api/v2/devices/leakDetectors/{cd_uuid}",
-                f"/ris-public-api/api/v2/devices/leakDetectors/{cd_raw}",
-
-                # 6. History / Readings / Telemetry / Status endpoints
-                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}/history",
-                f"/ris-public-api/api/v2/devices/leakDetectors/{mac}/history",
-                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}/latest",
-                f"/ris-public-api/api/v2/devices/leakDetectors/{mac}/latest",
-                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}/readings",
-                f"/ris-public-api/api/v2/devices/leakDetectors/{mac}/readings",
-                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}/telemetry",
-                f"/ris-public-api/api/v2/devices/leakDetectors/{mac}/telemetry",
-                f"/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}/status",
-                f"/ris-public-api/api/v2/devices/leakDetectors/{mac}/status",
-
-                # 7. Collection endpoints
-                f"/ris-public-api/api/v2/devices/waterLeakDetector?locationId={loc_raw}",
-                f"/ris-public-api/api/v2/devices/waterLeakDetector?locationId={loc_uuid}",
-                f"/ris-public-api/api/v2/devices/waterLeakDetectors?locationId={loc_raw}",
-                f"/ris-public-api/api/v2/devices/leakDetectors?locationId={loc_raw}",
-                f"/ris-public-api/api/v2/devices/leakDetectors?locationId={loc_uuid}",
-
-                # 8. Alternative host: api.resideo.com
-                f"https://api.resideo.com/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}/state",
-                f"https://api.resideo.com/ris-public-api/api/v2/devices/leakDetectors/{mac}/state",
-                f"https://api.resideo.com/ris-public-api/api/v2/devices/smokeDetectors/{mac}/state",
-                f"https://api.resideo.com/ris-public-api/api/v2/devices/{mac}/state",
-                f"https://api.resideo.com/ris-public-api/api/v2/devices/waterLeakDetectors/{mac}",
-                f"https://api.resideo.com/ris-public-api/api/v2/devices/leakDetectors/{mac}",
+                # 3. Product ID (wld3) and DeviceType (WaterLeakDetector3) endpoints from the 200 payload
+                f"/ris-public-api/api/v2/devices/WaterLeakDetector3/{mac}",
+                f"/ris-public-api/api/v2/devices/waterLeakDetector3/{mac}",
+                f"/ris-public-api/api/v2/devices/WaterLeakDetector3/{mac}/state",
+                f"/ris-public-api/api/v2/devices/waterLeakDetector3/{mac}/state",
+                f"/ris-public-api/api/v2/devices/WaterLeakDetector3/{mac}/status",
+                f"/ris-public-api/api/v2/devices/waterLeakDetector3/{mac}/status",
+                f"/ris-public-api/api/v2/devices/waterLeakDetector3s/{mac}",
+                f"/ris-public-api/api/v2/devices/waterLeakDetector3s/{mac}/state",
+                f"/ris-public-api/api/v2/devices/waterLeakDetectors3/{mac}",
+                f"/ris-public-api/api/v2/devices/waterLeakDetectors3/{mac}/state",
+                f"/ris-public-api/api/v1/devices/WaterLeakDetector3/{mac}",
+                f"/ris-public-api/api/v1/devices/waterLeakDetector3/{mac}",
+                f"/ris-public-api/api/v1/devices/WaterLeakDetector3/{mac}/state",
+                f"/ris-public-api/api/v1/devices/waterLeakDetector3/{mac}/state",
+                f"/ris-public-api/api/v2/devices/wld3/{mac}",
+                f"/ris-public-api/api/v2/devices/wld3s/{mac}",
+                f"/ris-public-api/api/v2/devices/wld/{mac}",
+                f"/ris-public-api/api/v2/devices/wlds/{mac}",
+                f"/ris-public-api/api/v2/devices/wld3/{mac}/state",
+                f"/ris-public-api/api/v2/devices/wld3s/{mac}/state",
+                f"/ris-public-api/api/v2/devices/wld/{mac}/state",
+                f"/ris-public-api/api/v2/devices/wlds/{mac}/state",
+                f"/ris-public-api/api/v2/devices/wld3/{mac}/status",
+                f"/ris-public-api/api/v1/devices/wld3/{mac}",
+                f"/ris-public-api/api/v1/devices/wld/{mac}",
+                f"/ris-public-api/api/v2/devices/LeakDetector_L1_R/{mac}",
+                f"/ris-public-api/api/v2/devices/LeakDetector_L1_R/{mac}/state",
+                f"/ris-public-api/api/v2/devices/leakDetector_L1_R/{mac}",
+                f"/ris-public-api/api/v2/devices/leakDetector_L1_R/{mac}/state",
+                f"/ris-public-api/api/v2/devices/WaterLeakDetector/{mac}",
+                f"/ris-public-api/api/v2/devices/WaterLeakDetector/{mac}/state",
+                f"/ris-public-api/api/v2/devices/{dev_raw}",
+                f"/ris-public-api/api/v2/devices/{dev_raw}/state",
+                f"/ris-public-api/api/v1/devices/{dev_raw}",
+                f"/ris-public-api/api/v1/devices/{dev_raw}/state",
             ]
             for endpoint in candidates:
                 if not endpoint:
@@ -423,8 +461,14 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
         if isinstance(data, list):
             for item in data:
                 if isinstance(item, dict):
-                    item_id = self._find_first(item, "deviceId", "mac", "name", "id")
-                    if item_id and clean_device_id(item_id) == mac:
+                    item_dev_id = self._find_first(item, "deviceId", "mac")
+                    if item_dev_id and clean_device_id(item_dev_id) == mac:
+                        self._update_leak_detector_from_dict(mac, item)
+                        return
+                    if leak.consumer_device_id and item.get("id") == leak.consumer_device_id:
+                        self._update_leak_detector_from_dict(mac, item)
+                        return
+                    if leak.device_id_raw and item.get("device", {}).get("id") == leak.device_id_raw:
                         self._update_leak_detector_from_dict(mac, item)
                         return
             if len(data) == 1 and isinstance(data[0], dict):
@@ -436,9 +480,25 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
 
         if "data" in data and isinstance(data["data"], (dict, list)):
             self._update_leak_detector_from_dict(mac, data["data"])
+            return
+
+        # If this dict explicitly declares a different device, don't parse it for this MAC
+        direct_dev_id = self._find_first(data, "deviceId")
+        if direct_dev_id and clean_device_id(direct_dev_id) != mac:
+            return
 
         # 1. Moisture / Water Present
-        water = self._find_first(data, "waterPresent", "water_present", "leakDetected", "water", "leak", "isWaterDetected")
+        water = self._find_first(
+            data,
+            "waterPresent",
+            "water_present",
+            "leakDetected",
+            "water",
+            "leak",
+            "isWaterDetected",
+            "waterDetection",
+            "moisture",
+        )
         if water is not None:
             old_water = leak.water_present
             if isinstance(water, bool):
@@ -453,7 +513,7 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
             if leak.water_present != old_water:
                 changed = True
 
-        alarms = self._find_first(data, "currentAlarms", "alarms", "alarmState")
+        alarms = self._find_first(data, "currentAlarms", "alarms", "alarmState", "thermostatFaults")
         if isinstance(alarms, list):
             for alarm in alarms:
                 alarm_str = str(alarm).lower()
@@ -469,7 +529,16 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
                     changed = True
 
         # 2. Temperature
-        temp = self._find_first(data, "indoorTemperature", "temperature", "temp", "indoor_temperature")
+        temp = self._find_first(
+            data,
+            "displayedIndoorTemperature",
+            "indoorTemperature",
+            "temperature",
+            "temp",
+            "indoor_temperature",
+            "currentTemperature",
+            "tempF",
+        )
         if temp is not None:
             try:
                 val_temp = float(temp)
@@ -485,7 +554,16 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
                 pass
 
         # 3. Humidity
-        hum = self._find_first(data, "indoorHumidity", "humidity", "hum", "humid", "indoor_humidity")
+        hum = self._find_first(
+            data,
+            "displayedIndoorHumidity",
+            "indoorHumidity",
+            "humidity",
+            "hum",
+            "humid",
+            "indoor_humidity",
+            "currentHumidity",
+        )
         if hum is not None:
             try:
                 val_hum = round(float(hum), 1)
@@ -496,7 +574,16 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
                 pass
 
         # 4. Battery
-        batt = self._find_first(data, "batteryRemaining", "batteryLevel", "battery", "battery_level", "batteryPercentage")
+        batt = self._find_first(
+            data,
+            "batteryRemaining",
+            "batteryLevel",
+            "battery",
+            "battery_level",
+            "batteryPercentage",
+            "batteryStatus",
+            "batteryState",
+        )
         if batt is not None:
             try:
                 if isinstance(batt, dict):
@@ -523,7 +610,7 @@ class ResideoDataUpdateCoordinator(DataUpdateCoordinator[dict[str, ResideoDevice
                 pass
 
         # 5. Connectivity
-        online = self._find_first(data, "isOnline", "online", "connected")
+        online = self._find_first(data, "isOnline", "online", "connected", "connectionStatus")
         if online is not None:
             if isinstance(online, bool):
                 val_online = online
